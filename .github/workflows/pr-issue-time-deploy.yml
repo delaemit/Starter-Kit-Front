@@ -3,7 +3,6 @@ name: Add Spent Time to Project Issues on PR Merge
 on:
   pull_request:
     branches:
-      - main
       - dev
       - develop
     types: [opened, edited, closed]
@@ -12,11 +11,16 @@ jobs:
   add-spent-time:
     runs-on: ubuntu-latest
     steps:
-      - name: Add Spent time to linked issues
+      - id: validate-time-and-issues
+        name: Add Spent time to linked issues
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.REVIEWER_TOKEN }}
           script: |
+            const core = require("@actions/core");
+
+            core.setOutput("should_deploy", "false");
+
             const action = context.payload.action;
             const pr = context.payload.pull_request;
             const isMergeEvent = action === "closed" && pr.merged;
@@ -33,6 +37,7 @@ jobs:
 
             async function commentAndExit(message) {
               await comment(message);
+              core.setOutput("should_deploy", "false");
               return;
             }
 
@@ -249,8 +254,10 @@ jobs:
               console.log(`Skipped updates:\n${skippedLogs.join("\n")}`);
             }
 
+            core.setOutput("should_deploy", "true");
+
       - name: Trigger Deployment
-        if: ${{ github.event.pull_request.merged == true }}
+        if: ${{ github.event.pull_request.merged == true && steps.validate-time-and-issues.outputs.should_deploy == 'true' }}
         run: |
           curl -X GET "${{ secrets.FORGE_DEPLOY_DEV_URL }}"
         shell: bash
