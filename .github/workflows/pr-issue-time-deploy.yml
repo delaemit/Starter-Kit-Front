@@ -3,6 +3,7 @@ name: Add Spent Time to Project Issues on PR Merge
 on:
   pull_request:
     branches:
+      - main
       - dev
       - develop
     types: [opened, edited, closed]
