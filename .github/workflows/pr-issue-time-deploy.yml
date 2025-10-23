@@ -290,7 +290,7 @@ jobs:
             await commentOnPR(summary.join("\n\n"));
 
       - name: Trigger Deployment
-        if: ${{ github.event.action == 'closed' && github.event.pull_request.merged == true && secrets.FORGE_DEPLOY_DEV_URL != ''}}
+        if: ${{ github.event.action == 'closed' && github.event.pull_request.merged == true}}
         shell: bash
         run: |
           curl -sS -X GET "${{ secrets.FORGE_DEPLOY_DEV_URL }}"
