@@ -3,9 +3,9 @@ name: Add Spent Time to Project Issues on PR Merge
 on:
   pull_request:
     branches:
-      - main
       - dev
       - develop
+      - development
     types: [opened, edited, closed]
 
 jobs:
@@ -18,7 +18,6 @@ jobs:
         with:
           github-token: ${{ secrets.REVIEWER_TOKEN }}
           script: |
-            const core = require("@actions/core");
 
             core.setOutput("should_deploy", "false");
 
@@ -39,6 +38,7 @@ jobs:
             async function commentAndExit(message) {
               await comment(message);
               core.setOutput("should_deploy", "false");
+              core.setFailed(message);
               return;
             }
 
