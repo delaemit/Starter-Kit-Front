@@ -1,4 +1,4 @@
-name: Add Spent Time to Project Issues on PR Events
+name: Add Spent Time to Project Issues on PR Merge
 
 on:
   pull_request:
@@ -6,7 +6,6 @@ on:
       - main
       - dev
       - develop
-    # Run on create/update AND keep closed for merge handling
     types: [opened, edited, closed]
 
 jobs:
@@ -18,184 +17,87 @@ jobs:
         with:
           github-token: ${{ secrets.REVIEWER_TOKEN }}
           script: |
-            const pr = context.payload.pull_request;
             const action = context.payload.action;
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const prNumber = pr.number;
-      
-            async function commentOnPR(message) {
+            const pr = context.payload.pull_request;
+            const isMergeEvent = action === "closed" && pr.merged;
+
+            async function comment(message) {
               console.log(message);
               await github.rest.issues.createComment({
-                owner, repo, issue_number: prNumber, body: message,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: message,
               });
             }
-      
-            // ------- Helpers -------
-            function extractSection(body, startHeader, endHeader) {
-              const re = new RegExp(`${startHeader}\\s*([\\s\\S]*?)${endHeader}`, 'i');
-              const m = body?.match(re);
-              return m ? m[1] : null;
-            }
-            function parseIssuesFromTasksBlock(block) {
-              // Accept "Close #123" or "Closes #123" (case-insensitive), allow multiple
-              const regex = /\bclose(?:s)?\s*#(\d+)\b/ig;
-              const ids = new Set();
-              let m;
-              while ((m = regex.exec(block)) !== null) ids.add(parseInt(m[1], 10));
-              return [...ids];
-            }
-            const marker = `spent-updated: pr-${prNumber}`;
-            const markerComment = (msg) => `<!-- ${marker} -->\n${msg}`;
-      
-            // ------- 1) Parse Tasks block for issues -------
-            const tasksBlock = extractSection(
-              pr.body || '',
-              '##\\s*📂\\s*Задачи:',
-              '##\\s*⏰\\s*Время:'
-            );
-      
-            let parsedIssues = [];
-            if (tasksBlock) {
-              parsedIssues = parseIssuesFromTasksBlock(tasksBlock);
-            }
-      
-            // ------- 2) Parse time from "## ⏰ Время:" -------
-            const timeBlock = extractSection(
-              pr.body || '',
-              '##\\s*⏰\\s*Время:',
-              '##\\s*🥇\\s*Контрольный чек-лист:|\\Z'
-            );
-            function parseTime(block) {
-              if (!block) return null;
-              const cleaned = block.replace(/<!--[\\s\\S]*?-->/g, ' ').trim();
-              const m = cleaned.match(/\b(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m)?\b/i);
-              if (!m || (!m[1] && !m[2])) return null;
-              const h = m[1] ? parseFloat(m[1]) : 0;
-              const min = m[2] ? parseFloat(m[2]) : 0;
-              return Math.round((h + min / 60) * 100) / 100;
-            }
-            const totalHours = parseTime(timeBlock);
-      
-            // ------- OPENED / EDITED: VALIDATION -------
-            if (action === 'opened' || action === 'edited') {
-              const problems = [];
-      
-              if (!tasksBlock) {
-                problems.push("Не найден блок **`## 📂 Задачи:`**. Добавьте его и укажите задачу в формате `Closes #123`.");
-              } else if (parsedIssues.length === 0) {
-                problems.push("В блоке **`## 📂 Задачи:`** не найдена запись вида `Close(s) #<номер>`.\nПример: `Closes #123`.");
-              }
-      
-              if (totalHours == null) {
-                problems.push("Не удалось разобрать время в блоке **`## ⏰ Время:`**. Используйте формат, например: `2h 30m` или `1.5h`.");
-              }
-      
-              // If we have issue numbers, validate presence in a Project V2
-              const projectProblems = [];
-              if (parsedIssues.length > 0) {
-                for (const issueNumber of parsedIssues) {
-                  const issueQuery = await github.graphql(
-                    `
-                      query($owner: String!, $repo: String!, $issueNumber: Int!) {
-                        repository(owner: $owner, name: $repo) {
-                          issue(number: $issueNumber) {
-                            number
-                            projectItems(first: 10) {
-                              nodes {
-                                id
-                                project {
-                                  id
-                                  title
-                                  fields(first: 50) {
-                                    nodes { ... on ProjectV2Field { id name dataType } }
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    `,
-                    { owner, repo, issueNumber }
-                  );
-      
-                  const itemNode = issueQuery.repository.issue?.projectItems.nodes[0];
-                  if (!itemNode) {
-                    projectProblems.push(`Issue #${issueNumber}: ❌ не найдена карточка в Project V2. Добавьте задачу в проект.`);
-                    continue;
-                  }
-                  const spentField = itemNode.project.fields.nodes.find(f => f.name === "Spent" && f.dataType === "NUMBER");
-                  if (!spentField) {
-                    projectProblems.push(`Issue #${issueNumber}: ⚠️ в проекте **${itemNode.project.title ?? "(unknown)"}** нет числового поля **Spent**.`);
-                  }
-                }
-              }
-      
-              const lines = [];
-              if (totalHours != null) lines.push(`Время: **${totalHours}h** ✅`);
-              if (parsedIssues.length > 0) lines.push(`Найдено задач: ${parsedIssues.map(n => `#${n}`).join(', ')}`);
-      
-              if (projectProblems.length) lines.push(projectProblems.join("\n"));
-              if (problems.length) lines.push(problems.join("\n"));
-      
-              if (problems.length || projectProblems.length) {
-                await commentOnPR(lines.join("\n\n"));
-                core.setFailed("Validation failed: missing or invalid tasks/time/project.");
-                return;
-              }
-      
-              await commentOnPR(lines.join("\n\n") + "\n\nВсе проверки пройдены ✅");
-              return; // validation-only
-            }
-      
-            // ------- CLOSED (MERGED): update Spent idempotently -------
-            if (action !== 'closed' || pr.merged !== true) {
-              return; // closed but not merged => nothing
-            }
-      
-            if (parsedIssues.length === 0) {
-              await commentOnPR("Не удалось найти задачи в блоке **`## 📂 Задачи:`** (ожидалось `Close(s) #<номер>`). Обновление времени пропущено.");
+
+            async function commentAndExit(message) {
+              await comment(message);
               return;
             }
-      
-            if (totalHours == null) {
-              await commentOnPR("Не удалось разобрать время в **`## ⏰ Время:`**. Обновление времени пропущено.");
-              return;
+
+            const prBody = pr.body ?? "";
+
+            // --- Извлекаем задачи из блока "## 📂 Задачи:" и номера issues ---
+            const tasksSectionMatch = prBody.match(/## 📂 Задачи:\s*([\s\S]*?)## ⏰ Время:/i);
+            if (!tasksSectionMatch) {
+              return await commentAndExit("No tasks block found in PR description, exiting.");
             }
-      
-            const updateLogs = [];
-            const skipLogs = [];
-            const problemLogs = [];
-      
-            for (const issueNumber of parsedIssues) {
-              // Idempotency: skip if already updated for this PR
-              const comments = await github.paginate(
-                github.rest.issues.listComments,
-                { owner, repo, issue_number: issueNumber, per_page: 100 }
-              );
-              const alreadyUpdated = comments.some(c => (c.body || '').includes(`<!-- ${marker} -->`));
-              if (alreadyUpdated) {
-                const msg = `Issue #${issueNumber}: уже обновлялась для PR #${prNumber}, пропуск.`;
-                console.log(msg);
-                skipLogs.push(msg);
-                continue;
-              }
-      
-              // Fetch project card & Spent field
+
+            const tasksSection = tasksSectionMatch[1].replace(/<!--[\s\S]*?-->/g, " ").trim();
+            const issueMatches = [...tasksSection.matchAll(/\bClose(?:s)?\s+#(\d+)\b/gi)];
+            const uniqueIssueNumbers = [...new Set(issueMatches.map(match => parseInt(match[1], 10)))];
+
+            if (uniqueIssueNumbers.length === 0) {
+              return await commentAndExit("No issues referenced in PR description, exiting.");
+            }
+
+            if (uniqueIssueNumbers.length > 1) {
+              return await commentAndExit("Multiple issues referenced in PR description, exiting.");
+            }
+
+            // --- Извлекаем время из блока "## ⏰ Время:" и конвертируем в часы ---
+            const timeSectionMatch = prBody.match(/## ⏰ Время:\s*([\s\S]*?)## 🥇 Контрольный чек-лист:/i);
+            if (!timeSectionMatch) {
+              return await commentAndExit("No time block found, exiting.");
+            }
+
+            const timeSection = timeSectionMatch[1].replace(/<!--[\s\S]*?-->/g, " ").trim();
+            const timeMatch = timeSection.match(/\b(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m)?\b/i);
+            if (!timeMatch || (!timeMatch[1] && !timeMatch[2])) {
+              return await commentAndExit("No time block found, exiting.");
+            }
+
+            const hours = timeMatch[1] ? parseFloat(timeMatch[1]) : 0;
+            const minutes = timeMatch[2] ? parseFloat(timeMatch[2]) : 0;
+            const totalHours = Math.round((hours + minutes / 60) * 100) / 100;
+
+            console.log(`Total time to add: ${totalHours} hours`);
+
+            const processedIssues = [];
+
+            for (const issueNumber of uniqueIssueNumbers) {
+
+              // --- Получаем карточку в Project V2 ---
               const issueQuery = await github.graphql(
                 `
                   query($owner: String!, $repo: String!, $issueNumber: Int!) {
                     repository(owner: $owner, name: $repo) {
                       issue(number: $issueNumber) {
+                        id
                         projectItems(first: 10) {
                           nodes {
                             id
                             project {
                               id
-                              title
-                              fields(first: 50) {
-                                nodes { ... on ProjectV2Field { id name dataType } }
+                              fields(first: 20) {
+                                nodes {
+                                  ... on ProjectV2Field {
+                                    id
+                                    name
+                                    dataType
+                                  }
+                                }
                               }
                             }
                           }
@@ -204,40 +106,85 @@ jobs:
                     }
                   }
                 `,
-                { owner, repo, issueNumber }
+                { owner: context.repo.owner, repo: context.repo.repo, issueNumber }
               );
-      
-              const itemNode = issueQuery.repository.issue?.projectItems.nodes[0];
+
+              const repoIssue = issueQuery.repository.issue;
+              if (!repoIssue) {
+                return await commentAndExit(`Issue #${issueNumber}: referenced in PR description but not found, exiting.`);
+              }
+
+              const itemNode = repoIssue.projectItems.nodes[0];
               if (!itemNode) {
-                problemLogs.push(`Issue #${issueNumber}: нет карточки в Project V2, пропуск.`);
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: issueNumber,
-                  body: markerComment(`Нет карточки в Project V2, пропуск.`),
-                });
-                continue;
+                return await commentAndExit(`Issue #${issueNumber}: not found in project, exiting.`);
               }
-      
-              const spentField = itemNode.project.fields.nodes.find(f => f.name === "Spent" && f.dataType === "NUMBER");
+
+              const spentField = itemNode.project.fields.nodes.find(f => f.name === "Spent");
               if (!spentField) {
-                problemLogs.push(`Issue #${issueNumber}: нет числового поля **Spent** в проекте **${itemNode.project.title ?? "(unknown)"}**, пропуск.`);
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: issueNumber,
-                  body: markerComment(`Нет числового поля **Spent** в проекте, пропуск.`),
-                });
+                return await commentAndExit(`Issue #${issueNumber}: no Spent field found in project, exiting.`);
+              }
+
+              processedIssues.push({
+                issueNumber,
+                itemId: itemNode.id,
+                projectId: itemNode.project.id,
+                spentFieldId: spentField.id,
+              });
+            }
+
+            if (!isMergeEvent) {
+              console.log(`Pull request action "${action}" validated successfully; skipping issue updates.`);
+              return;
+            }
+
+            const flagMarker = `<!--spent-updated-by-pr-${pr.number}-->`;
+            const updateLogs = [];
+            const skippedLogs = [];
+
+            for (const processedIssue of processedIssues) {
+              const { issueNumber, itemId, projectId, spentFieldId } = processedIssue;
+
+              let alreadyUpdated = false;
+              const commentsIterator = github.paginate.iterator(
+                github.rest.issues.listComments,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  per_page: 100,
+                }
+              );
+
+              for await (const response of commentsIterator) {
+                if (response.data.some(comment => comment.body?.includes(flagMarker))) {
+                  alreadyUpdated = true;
+                  break;
+                }
+              }
+
+              if (alreadyUpdated) {
+                const skipMessage = `Issue #${issueNumber}: already updated for PR #${pr.number}, skipping.`;
+                console.log(skipMessage);
+                skippedLogs.push(skipMessage);
                 continue;
               }
-      
-              // Read current Spent
+
+              // --- Получаем текущее значение поля Spent ---
               const fieldValueQuery = await github.graphql(
                 `
                   query($itemId: ID!) {
                     node(id: $itemId) {
                       ... on ProjectV2Item {
                         id
-                        fieldValues(first: 50) {
+                        fieldValues(first: 20) {
                           nodes {
                             ... on ProjectV2ItemFieldNumberValue {
-                              field { ... on ProjectV2FieldCommon { id name } }
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  id
+                                  name
+                                }
+                              }
                               number
                             }
                           }
@@ -246,17 +193,18 @@ jobs:
                     }
                   }
                 `,
-                { itemId: itemNode.id }
+                { itemId }
               );
-      
+
               const spentFieldValue = fieldValueQuery.node.fieldValues.nodes.find(
                 f => f.field?.name === "Spent"
               );
-              const currentSpent = spentFieldValue?.number ?? 0;
+
+              const currentSpent = spentFieldValue?.number || 0;
               const roundedCurrentSpent = Math.round(currentSpent * 100) / 100;
               const newSpent = Math.round((currentSpent + totalHours) * 100) / 100;
-      
-              // Update Spent
+
+              // --- Обновляем поле Spent ---
               await github.graphql(
                 `
                   mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
@@ -265,32 +213,44 @@ jobs:
                       itemId: $itemId,
                       fieldId: $fieldId,
                       value: { number: $value }
-                    }) { projectV2Item { id } }
+                    }) {
+                      projectV2Item {
+                        id
+                      }
+                    }
                   }
                 `,
-                { projectId: itemNode.project.id, itemId: itemNode.id, fieldId: spentField.id, value: newSpent }
+                { projectId, itemId, fieldId: spentFieldId, value: newSpent }
               );
-      
-              // Mark & log
-              const updateLog = `Issue #${issueNumber}: добавлено ${totalHours}h (Spent ${roundedCurrentSpent} -> ${newSpent}).`;
+
+              const issueCommentBody = `${flagMarker}\nSpent updated by PR #${pr.number}: added ${totalHours} hours (Spent ${roundedCurrentSpent} -> ${newSpent}).`;
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: issueCommentBody,
+              });
+
+              const updateLog = `Issue #${issueNumber}: added ${totalHours} hours (Spent ${roundedCurrentSpent} -> ${newSpent}).`;
               console.log(updateLog);
               updateLogs.push(updateLog);
-      
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: issueNumber,
-                body: markerComment(`Обновлено **Spent** на \`${totalHours}h\` при слиянии PR #${prNumber}. Было: ${roundedCurrentSpent} → Стало: ${newSpent}.`),
-              });
             }
-      
-            const summary = [];
-            summary.push(`Итоговое добавленное время: **${totalHours}h**`);
-            if (updateLogs.length) summary.push(`Обновления:\n${updateLogs.map(l => `- ${l}`).join("\n")}`);
-            if (skipLogs.length)   summary.push(`Пропущено (уже обновлено ранее):\n${skipLogs.map(l => `- ${l}`).join("\n")}`);
-            if (problemLogs.length) summary.push(`Проблемы:\n${problemLogs.map(l => `- ${l}`).join("\n")}`);
-            await commentOnPR(summary.join("\n\n"));
+
+            if (updateLogs.length > 0) {
+              let summaryComment = `Time tracking updates:\n${updateLogs.map(log => `- ${log}`).join("\n")}`;
+
+              if (skippedLogs.length > 0) {
+                summaryComment += `\n\nSkipped updates:\n${skippedLogs.map(log => `- ${log}`).join("\n")}`;
+              }
+
+              await comment(summaryComment);
+            } else if (skippedLogs.length > 0) {
+              console.log(`Skipped updates:\n${skippedLogs.join("\n")}`);
+            }
 
       - name: Trigger Deployment
-        if: ${{ github.event.action == 'closed' && github.event.pull_request.merged == true}}
-        shell: bash
+        if: ${{ github.event.pull_request.merged == true }}
         run: |
-          curl -sS -X GET "${{ secrets.FORGE_DEPLOY_DEV_URL }}"
+          curl -X GET "${{ secrets.FORGE_DEPLOY_DEV_URL }}"
+        shell: bash
