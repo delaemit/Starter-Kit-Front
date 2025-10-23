@@ -3,7 +3,6 @@ name: Add Spent Time to Project Issues on PR Merge
 on:
   pull_request:
     branches:
-      - main
       - dev
       - develop
       - development
@@ -37,7 +36,8 @@ jobs:
             }
 
             async function commentAndExit(message) {
-              await comment(message);
+              const failureMessage = message.startsWith("❌") ? message : `❌ ${message}`;
+              await comment(failureMessage);
               core.setOutput("should_deploy", "false");
               core.setFailed(message);
               return;
@@ -261,5 +261,5 @@ jobs:
       - name: Trigger Deployment
         if: ${{ github.event.pull_request.merged == true && steps.validate-time-and-issues.outputs.should_deploy == 'true' }}
         run: |
-          curl -X GET "${{ secrets.FORGE_DEPLOY_DEV_URL }}"
+          curl -sS -f -X GET "${{ secrets.FORGE_DEPLOY_DEV_URL }}"
         shell: bash
