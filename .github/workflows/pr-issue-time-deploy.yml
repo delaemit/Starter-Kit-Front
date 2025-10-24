@@ -53,7 +53,7 @@ jobs:
             }
 
             const tasksSection = tasksSectionMatch[1].replace(/<!--[\s\S]*?-->/g, " ").trim();
-            const issueMatches = [...tasksSection.matchAll(/#(\d+)/g)];
+            const issueMatches = [...tasksSection.matchAll(/\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)\b/gi)];
             const uniqueIssueNumbers = [...new Set(issueMatches.map(match => parseInt(match[1], 10)))];
 
             if (uniqueIssueNumbers.length === 0) {
