@@ -1,1 +1,1 @@
-# Frontend Starter Kit
+# Frontend Starter Kit.
