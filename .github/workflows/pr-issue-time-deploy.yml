@@ -49,40 +49,51 @@ jobs:
             // --- Извлекаем задачи из блока "## 📂 Задачи:" и номера issues ---
             const tasksSectionMatch = prBody.match(/## 📂 Задачи:\s*([\s\S]*?)## ⏰ Время:/i);
             if (!tasksSectionMatch) {
-              return await commentAndExit("No tasks block found in PR description, exiting.");
+              return await commentAndExit("Не найден блок задач в описании PR. Останавливаем выполнение.");
             }
 
             const tasksSection = tasksSectionMatch[1].replace(/<!--[\s\S]*?-->/g, " ").trim();
-            const issueMatches = [...tasksSection.matchAll(/\bClose(?:s)?\s+#(\d+)\b/gi)];
+            const issueMatches = [...tasksSection.matchAll(/#(\d+)/g)];
             const uniqueIssueNumbers = [...new Set(issueMatches.map(match => parseInt(match[1], 10)))];
 
             if (uniqueIssueNumbers.length === 0) {
-              return await commentAndExit("No issues referenced in PR description, exiting.");
-            }
-
-            if (uniqueIssueNumbers.length > 1) {
-              return await commentAndExit("Multiple issues referenced in PR description, exiting.");
+              return await commentAndExit("В описании PR не указаны задачи. Останавливаем выполнение.");
             }
 
             // --- Извлекаем время из блока "## ⏰ Время:" и конвертируем в часы ---
             const timeSectionMatch = prBody.match(/## ⏰ Время:\s*([\s\S]*?)## 🥇 Контрольный чек-лист:/i);
             if (!timeSectionMatch) {
-              return await commentAndExit("No time block found, exiting.");
+              return await commentAndExit("Затраченное время не указано.");
             }
 
             const timeSection = timeSectionMatch[1].replace(/<!--[\s\S]*?-->/g, " ").trim();
             const timeMatch = timeSection.match(/\b(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m)?\b/i);
             if (!timeMatch || (!timeMatch[1] && !timeMatch[2])) {
-              return await commentAndExit("No time block found, exiting.");
+              return await commentAndExit("Затраченное время не указано.");
             }
 
             const hours = timeMatch[1] ? parseFloat(timeMatch[1]) : 0;
             const minutes = timeMatch[2] ? parseFloat(timeMatch[2]) : 0;
-            const totalHours = Math.round((hours + minutes / 60) * 100) / 100;
+            const totalHoursDecimal = hours + minutes / 60;
+            const totalHundredths = Math.round(totalHoursDecimal * 100);
+            const totalHours = totalHundredths / 100;
 
-            console.log(`Total time to add: ${totalHours} hours`);
+            console.log(`Общее время к добавлению: ${totalHours} ч`);
 
             const processedIssues = [];
+            const perIssueHundredths = [];
+
+            if (uniqueIssueNumbers.length > 1) {
+              const baseHundredths = Math.floor(totalHundredths / uniqueIssueNumbers.length);
+              const remainderHundredths = totalHundredths % uniqueIssueNumbers.length;
+
+              for (let index = 0; index < uniqueIssueNumbers.length; index++) {
+                const hundredthsForIssue = baseHundredths + (index < remainderHundredths ? 1 : 0);
+                perIssueHundredths.push(hundredthsForIssue);
+              }
+            } else {
+              perIssueHundredths.push(totalHundredths);
+            }
 
             for (const issueNumber of uniqueIssueNumbers) {
 
@@ -119,17 +130,17 @@ jobs:
 
               const repoIssue = issueQuery.repository.issue;
               if (!repoIssue) {
-                return await commentAndExit(`Issue #${issueNumber}: referenced in PR description but not found, exiting.`);
+                return await commentAndExit(`Задача #${issueNumber}: указана в описании PR, но не найдена. Останавливаем выполнение.`);
               }
 
               const itemNode = repoIssue.projectItems.nodes[0];
               if (!itemNode) {
-                return await commentAndExit(`Issue #${issueNumber}: not found in project, exiting.`);
+                return await commentAndExit(`Задача #${issueNumber}: не найдена в проекте. Останавливаем выполнение.`);
               }
 
               const spentField = itemNode.project.fields.nodes.find(f => f.name === "Spent");
               if (!spentField) {
-                return await commentAndExit(`Issue #${issueNumber}: no Spent field found in project, exiting.`);
+                return await commentAndExit(`Задача #${issueNumber}: не найдено поле Spent в проекте. Останавливаем выполнение.`);
               }
 
               processedIssues.push({
@@ -141,7 +152,7 @@ jobs:
             }
 
             if (!isMergeEvent) {
-              console.log(`Pull request action "${action}" validated successfully; skipping issue updates.`);
+              console.log(`Действие pull request "${action}" проверено, обновление задач пропущено.`);
               return;
             }
 
@@ -149,8 +160,11 @@ jobs:
             const updateLogs = [];
             const skippedLogs = [];
 
-            for (const processedIssue of processedIssues) {
+            for (const [index, processedIssue] of processedIssues.entries()) {
               const { issueNumber, itemId, projectId, spentFieldId } = processedIssue;
+              const hundredthsToAdd = perIssueHundredths[index];
+              const hoursToAdd = hundredthsToAdd / 100;
+              const timeToAdd = Math.round(hoursToAdd * 100) / 100;
 
               let alreadyUpdated = false;
               const commentsIterator = github.paginate.iterator(
@@ -171,7 +185,7 @@ jobs:
               }
 
               if (alreadyUpdated) {
-                const skipMessage = `Issue #${issueNumber}: already updated for PR #${pr.number}, skipping.`;
+                const skipMessage = `Задача #${issueNumber}: уже обновлена для PR #${pr.number}, пропускаем.`;
                 console.log(skipMessage);
                 skippedLogs.push(skipMessage);
                 continue;
@@ -210,7 +224,7 @@ jobs:
 
               const currentSpent = spentFieldValue?.number || 0;
               const roundedCurrentSpent = Math.round(currentSpent * 100) / 100;
-              const newSpent = Math.round((currentSpent + totalHours) * 100) / 100;
+              const newSpent = Math.round((currentSpent + hoursToAdd) * 100) / 100;
 
               // --- Обновляем поле Spent ---
               await github.graphql(
@@ -231,7 +245,7 @@ jobs:
                 { projectId, itemId, fieldId: spentFieldId, value: newSpent }
               );
 
-              const issueCommentBody = `${flagMarker}\nSpent updated by PR #${pr.number}: added ${totalHours} hours (Spent ${roundedCurrentSpent} -> ${newSpent}).`;
+              const issueCommentBody = `${flagMarker}\nВремя по задаче обновлено PR #${pr.number}: добавлено ${timeToAdd} ч (Spent ${roundedCurrentSpent} -> ${newSpent}).`;
 
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -240,27 +254,65 @@ jobs:
                 body: issueCommentBody,
               });
 
-              const updateLog = `Issue #${issueNumber}: added ${totalHours} hours (Spent ${roundedCurrentSpent} -> ${newSpent}).`;
+              const updateLog = `Задача #${issueNumber}: добавлено ${timeToAdd} ч (Spent ${roundedCurrentSpent} -> ${newSpent}).`;
               console.log(updateLog);
               updateLogs.push(updateLog);
             }
 
             if (updateLogs.length > 0) {
-              let summaryComment = `Time tracking updates:\n${updateLogs.map(log => `- ${log}`).join("\n")}`;
+              let summaryComment = `Обновления по учету времени:\n${updateLogs.map(log => `- ${log}`).join("\n")}`;
 
               if (skippedLogs.length > 0) {
-                summaryComment += `\n\nSkipped updates:\n${skippedLogs.map(log => `- ${log}`).join("\n")}`;
+                summaryComment += `\n\nПропущенные обновления:\n${skippedLogs.map(log => `- ${log}`).join("\n")}`;
               }
 
               await comment(summaryComment);
             } else if (skippedLogs.length > 0) {
-              console.log(`Skipped updates:\n${skippedLogs.join("\n")}`);
+              console.log(`Пропущенные обновления:\n${skippedLogs.join("\n")}`);
             }
 
             core.setOutput("should_deploy", "true");
 
       - name: Trigger Deployment
         if: ${{ github.event.pull_request.merged == true && steps.validate-time-and-issues.outputs.should_deploy == 'true' }}
-        run: |
-          curl -sS -f -X GET "${{ secrets.FORGE_DEPLOY_DEV_URL }}"
-        shell: bash
+        uses: actions/github-script@v7
+        env:
+          FORGE_DEPLOY_DEV_URL: ${{ secrets.FORGE_DEPLOY_DEV_URL }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+
+            async function comment(message) {
+              console.log(message);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: message,
+              });
+            }
+
+            async function commentAndExit(message) {
+              const failureMessage = message.startsWith("❌") ? message : `❌ ${message}`;
+              await comment(failureMessage);
+              core.setOutput("should_deploy", "false");
+              core.setFailed(message);
+              return;
+            }
+
+            try {
+              const response = await fetch(process.env.FORGE_DEPLOY_DEV_URL, { method: "GET" });
+
+              if (!response.ok) {
+                const responseBody = await response.text();
+                const failureDetails = responseBody ? ` Тело ответа: ${responseBody}` : "";
+                await commentAndExit(
+                  `Запрос на деплой завершился с ошибкой ${response.status} ${response.statusText}.${failureDetails}`.trim()
+                );
+                return;
+              }
+
+              await comment("🟢 Деплой успешно запущен.");
+            } catch (error) {
+              await commentAndExit(`При выполнении запроса на деплой произошла ошибка: ${error.message}`);
+            }
